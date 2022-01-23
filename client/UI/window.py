@@ -1,10 +1,16 @@
 import cv2
 import imutils
 import numpy as np
+import socket
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QPushButton, QAction, QLineEdit, QMessageBox, QLabel,
-                             QDialog, QVBoxLayout, QGridLayout, QHBoxLayout, QFormLayout)
+                             QDialog, QVBoxLayout, QGridLayout, QHBoxLayout, QFormLayout, QComboBox)
 from PyQt5.QtGui import QIcon, QFont, QPicture, QImage, QPixmap
 from PyQt5.QtCore import pyqtSlot, Qt, pyqtSignal, QThread
+from UI.threads import AuthThread, RecvThread
+
+
+SERVER_ADDRESS = '0.0.0.0'
+SERVER_PORT = 3108
 
 
 class VideoChatApp(QMainWindow):
@@ -12,33 +18,38 @@ class VideoChatApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.cams = None
-
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.connect((SERVER_ADDRESS, SERVER_PORT))
         self.init_ui()
 
     def init_ui(self):
-        self.cams = AppLog()
+        self.cams = AppLog(self.server_socket)
         self.cams.show()
         self.close()
 
 
 class AppLog(QDialog):
 
-    def __init__(self):
+    def __init__(self, socket):
         super().__init__()
+        self.server_socket = socket
+        # Init dicts for components
         self.text_boxes = {}
         self.labels = {}
         self.buttons = {}
+        # Init window settings
         self.title = 'Video Chat'
         self.left = 10
         self.top = 10
         self.width = 400
         self.height = 400
         self.cams = None
+        self.thread = AuthThread(self.server_socket, "")
+
         self.init_ui()
 
     def init_ui(self):
         self.setWindowTitle(self.title)
-        self.setWindowIcon(QIcon('pythonlogo.png'))
         self.setGeometry(self.left, self.top, self.width, self.height)
 
         self._create_components()
@@ -84,8 +95,11 @@ class AppLog(QDialog):
         self.buttons["Login"].clicked.connect(self._on_click_log)
         self.buttons["Register"].clicked.connect(self._on_click_reg)
 
-    def _send_account_data(self):
-        data = f"{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}"
+    def _send_account_data(self, prefix):
+        data = f"{prefix}\n{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}\n"
+        self.thread.buffer = bytes(data, 'UTF-8')
+        self.thread.start()
+        # self.server_socket.send(bytes(data, 'UTF-8'))
 
     def _clear_text_boxes(self):
         self.text_boxes["Login"].setText("")
@@ -93,25 +107,37 @@ class AppLog(QDialog):
 
     @pyqtSlot()
     def _on_click_log(self):
-        QMessageBox.question(self, 'Log in message', "Login", QMessageBox.Ok,
-                             QMessageBox.Ok)
+        self._send_account_data('LOGIN')
         self._clear_text_boxes()
-        self.open_video_window()
+        respond = self.server_socket.recv(2048)
+        respond = int(respond.decode('UTF-8'))
+        if respond == 1:
+            QMessageBox.question(self, 'Log in message', "Login successfully!", QMessageBox.Ok, QMessageBox.Ok)
+            self.open_video_window()
+        elif respond == -2:
+            QMessageBox.question(self, 'Log in message', "Wrong password!", QMessageBox.Ok, QMessageBox.Ok)
+        elif respond == -3:
+            QMessageBox.question(self, 'Log in message', "There is no user with that login!",
+                                 QMessageBox.Ok, QMessageBox.Ok)
 
     @pyqtSlot()
     def _on_click_reg(self):
-        QMessageBox.question(self, 'Register message', "Register", QMessageBox.Ok,
-                             QMessageBox.Ok)
+        self._send_account_data('REGISTER')
+        respond = self.server_socket.recv(2048)
+        respond = int(respond.decode('UTF-8'))
+        if respond == 1:
+            QMessageBox.question(self, 'Register message', "Success!", QMessageBox.Ok, QMessageBox.Ok)
+        if respond == -1:
+            QMessageBox.question(self, 'Register message', "That nickname is taken!", QMessageBox.Ok, QMessageBox.Ok)
         self._clear_text_boxes()
-        self.open_video_window()
 
     def open_video_window(self):
-        self.cams = AppVideo()
+        self.cams = AppVideo(self.server_socket)
         self.cams.show()
         self.close()
 
     def _switch_back(self):
-        self.cams = AppLog()
+        self.cams = VideoChatApp()
         self.cams.show()
         self.close()
 
@@ -141,38 +167,37 @@ class VideoThread(QThread):
 
 class AppVideo(QWidget):
 
-    def __init__(self):
+    def __init__(self, socket):
         super().__init__()
+        self.server_socket = socket
         self.window_width = 1000
         self.window_height = 800
+        self.thread = None
+        self.thread2 = None
 
         self.display_width = 400
         self.display_height = 400
-        # Labels
+        # Components
         self.image_label = QLabel(self)
-        self.txt_lbl = QLabel()
-        self.txt_lbl.setText("Friends")
+        self.cbx_friends = QComboBox()
+        self.bt_call = QPushButton("Call")
+        self.bt_quit = QPushButton("Hang up")
         # Layouts
-        self.cam_layout = QGridLayout()
-        self.main_layout = QHBoxLayout()
-        self.friends_layout = QFormLayout()
+        self.layout = QGridLayout()
 
         self.init_ui()
 
     def init_ui(self):
         self.setWindowTitle("Vide Chat Live")
         self.setGeometry(10, 10, self.window_width, self.window_height)
-        print(self.size())
+
         self.image_label.resize(self.display_width, self.display_height)
 
-        self.cam_layout.addWidget(self.image_label, 0, 0)
-
-        self.friends_layout.setVerticalSpacing(10)
-        self.friends_layout.addRow(self.txt_lbl)
-
-        self.main_layout.addLayout(self.cam_layout)
-        self.main_layout.addLayout(self.friends_layout)
-        self.setLayout(self.main_layout)
+        self.layout.addWidget(self.image_label, 0, 0)
+        self.layout.addWidget(self.cbx_friends, 1, 0)
+        self.layout.addWidget(self.bt_call, 1, 1)
+        self.layout.addWidget(self.bt_quit, 1, 2)
+        self.setLayout(self.layout)
 
         # create the video capture thread
         self.thread = VideoThread()
@@ -180,6 +205,8 @@ class AppVideo(QWidget):
         self.thread.change_pixmap_signal.connect(self.update_image)
         # start the thread
         self.thread.start()
+        # self.thread2 = RecvThread(server_socket=self.server_socket)
+        # self.thread2.start()
 
     def closeEvent(self, event):
         self.thread.stop()
@@ -188,6 +215,9 @@ class AppVideo(QWidget):
     @pyqtSlot(np.ndarray)
     def update_image(self, cv_img):
         """Updates the image_label with a new opencv image"""
+        # respond = self._server_socket.recv(2048)
+        # print(respond.decode('UTF-8'))
+        self.server_socket.send(cv_img)
         qt_img = self.convert_cv_qt(cv_img)
         self.image_label.setPixmap(qt_img)
 
@@ -201,6 +231,6 @@ class AppVideo(QWidget):
         return QPixmap.fromImage(p)
 
     def _switch_back(self):
-        self.cams = AppLog()
+        self.cams = AppLog(self.server_socket)
         self.cams.show()
         self.close()

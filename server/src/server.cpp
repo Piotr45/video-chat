@@ -7,22 +7,26 @@
 #include <string.h>
 #include <unistd.h>
 #include <opencv2/opencv.hpp>
+#include "database.cpp"
 
 #define MAX_CLIENT   10
 #define DEFAULT_PORT 3108
 #define MAX_EVENTS   100
-#define MAX_BUFFER_SIZE  1000000
+#define MAX_BUFFER_SIZE  1024
 
 
 int g_svr_sockfd;                   /* global server socket fd */
 int g_svr_port;                     /* global server port number */
 
-struct {
+struct client_data {
     int cli_sockfd;                 /* client socket fds */
     char cli_ip[20];                /* client connection ip */
 } g_client[MAX_CLIENT];
+struct client_data g_approved_clients[MAX_CLIENT];
 
 int g_epoll_fd;                     /* epoll fd */
+std::vector<Account> g_connected_users;
+std::vector<std::vector<int>> g_active_calls;
 
 struct epoll_event g_events[MAX_EVENTS];
 char buf[MAX_BUFFER_SIZE];
@@ -34,6 +38,7 @@ void init_data(void);               /* initialize data. */
 void init_server(int svr_port);     /* server socket bind/listen */
 void epoll_init(void);              /* epoll fd create */
 void epoll_cli_add(int cli_fd);     /* client fd add to epoll set */
+void respond(int cli_fd);           /* responds user of client fd */
 
 void userpool_add(int cli_fd, char *cli_ip); /* Adds user to pool */
 
@@ -194,15 +199,88 @@ void userpool_send(char *buffer) {
 }
 
 /**
+ * Sends information about all active accounts to all active users.
+ */
+void send_active_accounts(){
+    std::string str;
+    int i, len;
+    str.append("ACTIVE\n");
+    for (auto account : g_connected_users) {
+        str.append(account.get_login());
+        str.push_back('\n');
+    }
+    std::cout << str << std::endl;
+
+    for (i = 0; i < MAX_CLIENT; i++) {
+        if (g_client[i].cli_sockfd != -1) {
+            len = send(g_client[i].cli_sockfd, str.c_str(), len, 0);
+            fprintf(stdout, "[DEBUG] Send to %d : %s\n", g_client[i].cli_sockfd, str.c_str());
+            // TODO code
+        }
+    }
+}
+
+bool is_connected(int event_fd) {
+    for (auto account : g_connected_users) {
+        if (account.get_fd() == event_fd) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void add_connection(int event_fd, const std::string& login) {
+    for (auto account: g_accounts) {
+        if (account.get_login() == login) {
+            account.set_fd(event_fd);
+
+            g_connected_users.push_back(account);
+            return;
+        }
+    }
+    send_active_accounts();
+}
+
+void handle_registration(int event_fd, const std::string& login, const std::string& password) {
+    int ret = register_account(login, password);
+    if (ret == 1) {
+        send(event_fd, "1", strlen("1"), 0);
+    }
+    else if (ret == -1) {
+        send(event_fd, "-1", strlen("-1"), 0);
+    }
+}
+
+void handle_login(int event_fd, const std::string& login, const std::string& password) {
+    int ret = login_account(login, password);
+    if (ret == 1) {
+        send(event_fd, "1", strlen("1"), 0);
+        add_connection(event_fd, login);
+//        send_active_accounts();
+    }
+    else if (ret == -2) {
+        send(event_fd, "-2", strlen("-2"), 0);
+    }
+    else if (ret == -3) {
+        send(event_fd, "-3", strlen("-3"), 0);
+    }
+}
+
+void handle_active_accounts(int event_fd) {
+
+}
+void handle_call(int event_fd){
+
+}
+
+/**
  * This function receives message from client.
  * @param event_fd event descriptor
  */
 void client_recv(int event_fd) {
-    char r_buffer[MAX_BUFFER_SIZE]; /* for test.  packet size limit 1K */
+    char r_buffer[MAX_BUFFER_SIZE];
     int len;
-    // TODO code2
-    /* there need to be more precise code here */
-    /* for example , packet check(protocol needed) , real recv size check , etc. */
+    // TODO packet check, etc.
 
     /* read from socket */
     len = recv(event_fd, r_buffer, MAX_BUFFER_SIZE, 0);
@@ -212,38 +290,45 @@ void client_recv(int event_fd) {
         close(event_fd); /* epoll set fd also deleted automatically by this call as a spec */
         return;
     }
-    fprintf(stdout, "[DEBUG] Client send: %s\n", r_buffer);
 
-//    userpool_send("Message received.\n");
+    std::vector<std::string> tokens = split(r_buffer, '\n');
+
+    if (tokens[0] == "REGISTER") {
+        handle_registration(event_fd, tokens[1], tokens[2]);
+        return;
+    }
+    if (tokens[0] == "LOGIN") {
+        handle_login(event_fd, tokens[1], tokens[2]);
+        return;
+    }
 }
 
 void client_recv2(int event_fd) {
     cv::Mat img;
-    img = cv::Mat::zeros(480 , 640, CV_8UC3);
+    img = cv::Mat::zeros(480, 640, CV_8UC3);
     int imgSize = img.total() * img.elemSize();
     uchar *iptr = img.data;
     int bytes = 0;
     int key;
 
     //make img continuos
-    if ( ! img.isContinuous() ) {
+    if (!img.isContinuous()) {
         img = img.clone();
     }
 
-    std::cout << "Image Size:" << imgSize << std::endl;
-
-    cv::namedWindow("CV Video Client",1);
+    cv::namedWindow("CV Video Client", 1);
 
     while (key != 'q') {
 
-        if ((bytes = recv(event_fd, iptr, imgSize , MSG_WAITALL)) == -1) {
+        if ((bytes = recv(event_fd, iptr, imgSize, MSG_WAITALL)) == -1) {
             std::cerr << "recv failed, received bytes = " << bytes << std::endl;
         }
 
         cv::imshow("CV Video Client", img);
-
+//        userpool_send("Test!");
         if ((key = cv::waitKey(10)) >= 0) break;
     }
+
 }
 
 /**
@@ -283,7 +368,13 @@ void server_process(void) {
             isFirst = 0;
         }
 
-        client_recv2(g_events[i].data.fd);
+        if (is_connected(g_events[i].data.fd)) {
+            client_recv2(g_events[i].data.fd);
+        } else {
+            client_recv(g_events[i].data.fd);
+        }
+
+        send_active_accounts();
     } /* end of for 0-nfds */
 }
 

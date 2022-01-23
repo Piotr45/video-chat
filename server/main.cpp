@@ -1,4 +1,4 @@
-#include "src/server.cpp"
+#include "server.cpp"
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "EndlessLoop"
