@@ -25,8 +25,11 @@ struct client_data {
 struct client_data g_approved_clients[MAX_CLIENT];
 
 int g_epoll_fd;                     /* epoll fd */
-std::vector<Account> g_connected_users;
-std::vector<std::vector<int>> g_active_calls;
+
+std::vector<std::vector<Account>> g_active_calls;
+std::vector<Account> g_active_users;
+std::vector<int> g_command_sockets;
+std::vector<int> g_video_sockets;
 
 struct epoll_event g_events[MAX_EVENTS];
 char buf[MAX_BUFFER_SIZE];
@@ -201,28 +204,26 @@ void userpool_send(char *buffer) {
 /**
  * Sends information about all active accounts to all active users.
  */
-void send_active_accounts(){
+void send_active_accounts(int fd){
     std::string str;
-    int i, len;
+    int len;
     str.append("ACTIVE\n");
-    for (auto account : g_connected_users) {
+    for (auto account : g_active_users) {
         str.append(account.get_login());
         str.push_back('\n');
     }
     std::cout << str << std::endl;
 
-    for (i = 0; i < MAX_CLIENT; i++) {
-        if (g_client[i].cli_sockfd != -1) {
-            len = send(g_client[i].cli_sockfd, str.c_str(), len, 0);
-            fprintf(stdout, "[DEBUG] Send to %d : %s\n", g_client[i].cli_sockfd, str.c_str());
-            // TODO code
-        }
+    if ((len = send(fd, str.c_str(), str.size(), 0)) == -1 ){
+        std::cerr << "send failed, send bytes = " << len << std::endl;
+        return;
     }
+//    fprintf(stdout, "[DEBUG] Send to %d : %s\n", fd, str.c_str());
 }
 
-bool is_connected(int event_fd) {
-    for (auto account : g_connected_users) {
-        if (account.get_fd() == event_fd) {
+bool is_video_socket(int event_fd) {
+    for (auto socket : g_video_sockets) {
+        if (socket == event_fd) {
             return true;
         }
     }
@@ -230,15 +231,14 @@ bool is_connected(int event_fd) {
 }
 
 void add_connection(int event_fd, const std::string& login) {
-    for (auto account: g_accounts) {
+    for (auto account: g_users) {
         if (account.get_login() == login) {
             account.set_fd(event_fd);
 
-            g_connected_users.push_back(account);
+            g_active_users.push_back(account);
             return;
         }
     }
-    send_active_accounts();
 }
 
 void handle_registration(int event_fd, const std::string& login, const std::string& password) {
@@ -254,9 +254,8 @@ void handle_registration(int event_fd, const std::string& login, const std::stri
 void handle_login(int event_fd, const std::string& login, const std::string& password) {
     int ret = login_account(login, password);
     if (ret == 1) {
-        send(event_fd, "1", strlen("1"), 0);
         add_connection(event_fd, login);
-//        send_active_accounts();
+        send(event_fd, "1", strlen("1"), 0);
     }
     else if (ret == -2) {
         send(event_fd, "-2", strlen("-2"), 0);
@@ -272,6 +271,7 @@ void handle_active_accounts(int event_fd) {
 void handle_call(int event_fd){
 
 }
+
 
 /**
  * This function receives message from client.
@@ -293,6 +293,12 @@ void client_recv(int event_fd) {
 
     std::vector<std::string> tokens = split(r_buffer, '\n');
 
+    if (tokens[0] == "COMMAND") {
+        g_command_sockets.push_back(event_fd);
+    }
+    if (tokens[0] == "VIDEO") {
+        g_video_sockets.push_back(event_fd);
+    }
     if (tokens[0] == "REGISTER") {
         handle_registration(event_fd, tokens[1], tokens[2]);
         return;
@@ -301,11 +307,15 @@ void client_recv(int event_fd) {
         handle_login(event_fd, tokens[1], tokens[2]);
         return;
     }
+    if (tokens[0] == "ACTIVE-USERS") {
+        send_active_accounts(event_fd);
+    }
+//    std::cout << get_video_socket(event_fd) << std::endl;
 }
 
 void client_recv2(int event_fd) {
     cv::Mat img;
-    img = cv::Mat::zeros(480, 640, CV_8UC3);
+    img = cv::Mat::zeros(240, 320, CV_8UC3);
     int imgSize = img.total() * img.elemSize();
     uchar *iptr = img.data;
     int bytes = 0;
@@ -316,7 +326,7 @@ void client_recv2(int event_fd) {
         img = img.clone();
     }
 
-    cv::namedWindow("CV Video Client", 1);
+//    cv::namedWindow("CV Video Client", 1);
 
     while (key != 'q') {
 
@@ -324,8 +334,10 @@ void client_recv2(int event_fd) {
             std::cerr << "recv failed, received bytes = " << bytes << std::endl;
         }
 
-        cv::imshow("CV Video Client", img);
-//        userpool_send("Test!");
+//        cv::imshow("CV Video Client", img);
+
+        send(event_fd, img.data, imgSize, 0);
+
         if ((key = cv::waitKey(10)) >= 0) break;
     }
 
@@ -368,13 +380,15 @@ void server_process(void) {
             isFirst = 0;
         }
 
-        if (is_connected(g_events[i].data.fd)) {
+//        std::cout << g_events[i].data.fd << std::endl;
+
+        if (is_video_socket(g_events[i].data.fd)) {
             client_recv2(g_events[i].data.fd);
         } else {
             client_recv(g_events[i].data.fd);
         }
 
-        send_active_accounts();
+//        send_active_accounts();
     } /* end of for 0-nfds */
 }
 

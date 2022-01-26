@@ -1,3 +1,8 @@
+import pickle
+import struct
+from datetime import datetime
+import time
+
 import cv2
 import imutils
 import numpy as np
@@ -5,8 +10,8 @@ import socket
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QPushButton, QAction, QLineEdit, QMessageBox, QLabel,
                              QDialog, QVBoxLayout, QGridLayout, QHBoxLayout, QFormLayout, QComboBox)
 from PyQt5.QtGui import QIcon, QFont, QPicture, QImage, QPixmap
-from PyQt5.QtCore import pyqtSlot, Qt, pyqtSignal, QThread
-from UI.threads import AuthThread, RecvThread
+from PyQt5.QtCore import pyqtSlot, Qt
+from UI.threads import AuthThread, RecvThread, VideoThread, VideoSendThread, VideoRecvThread
 
 
 SERVER_ADDRESS = '0.0.0.0'
@@ -18,21 +23,33 @@ class VideoChatApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.cams = None
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.connect((SERVER_ADDRESS, SERVER_PORT))
+        self.command_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.video_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.command_socket.connect((SERVER_ADDRESS, SERVER_PORT))
+        self.video_socket.connect((SERVER_ADDRESS, SERVER_PORT))
+        print(self.video_socket)
+        print(self.command_socket)
+        self._send_paring_info()
         self.init_ui()
 
     def init_ui(self):
-        self.cams = AppLog(self.server_socket)
+        self.cams = AppLog(self.command_socket, self.video_socket)
         self.cams.show()
         self.close()
+
+    def _send_paring_info(self):
+        timestamp = int(datetime.timestamp(datetime.now()))
+        print(timestamp)
+        self.command_socket.send(bytes(f"COMMAND\n", 'UTF-8'))
+        self.video_socket.send(bytes(f"VIDEO\n", 'UTF-8'))
 
 
 class AppLog(QDialog):
 
-    def __init__(self, socket):
+    def __init__(self, command_socket, video_socket):
         super().__init__()
-        self.server_socket = socket
+        self.command_socket = command_socket
+        self.video_socket = video_socket
         # Init dicts for components
         self.text_boxes = {}
         self.labels = {}
@@ -44,7 +61,8 @@ class AppLog(QDialog):
         self.width = 400
         self.height = 400
         self.cams = None
-        self.thread = AuthThread(self.server_socket, "")
+        # Init threads
+        self.thread_send = AuthThread(self.command_socket, "")
 
         self.init_ui()
 
@@ -97,8 +115,8 @@ class AppLog(QDialog):
 
     def _send_account_data(self, prefix):
         data = f"{prefix}\n{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}\n"
-        self.thread.buffer = bytes(data, 'UTF-8')
-        self.thread.start()
+        self.thread_send.buffer = bytes(f"{data}", 'UTF-8')
+        self.thread_send.start()
         # self.server_socket.send(bytes(data, 'UTF-8'))
 
     def _clear_text_boxes(self):
@@ -109,7 +127,7 @@ class AppLog(QDialog):
     def _on_click_log(self):
         self._send_account_data('LOGIN')
         self._clear_text_boxes()
-        respond = self.server_socket.recv(2048)
+        respond = self.command_socket.recv(2048)
         respond = int(respond.decode('UTF-8'))
         if respond == 1:
             QMessageBox.question(self, 'Log in message', "Login successfully!", QMessageBox.Ok, QMessageBox.Ok)
@@ -123,7 +141,7 @@ class AppLog(QDialog):
     @pyqtSlot()
     def _on_click_reg(self):
         self._send_account_data('REGISTER')
-        respond = self.server_socket.recv(2048)
+        respond = self.command_socket.recv(2048)
         respond = int(respond.decode('UTF-8'))
         if respond == 1:
             QMessageBox.question(self, 'Register message', "Success!", QMessageBox.Ok, QMessageBox.Ok)
@@ -132,7 +150,7 @@ class AppLog(QDialog):
         self._clear_text_boxes()
 
     def open_video_window(self):
-        self.cams = AppVideo(self.server_socket)
+        self.cams = AppVideo(self.command_socket, self.video_socket)
         self.cams.show()
         self.close()
 
@@ -142,43 +160,27 @@ class AppLog(QDialog):
         self.close()
 
 
-class VideoThread(QThread):
-    change_pixmap_signal = pyqtSignal(np.ndarray)
-
-    def __init__(self):
-        super().__init__()
-        self._run_flag = True
-
-    def run(self):
-        # capture from web cam
-        cap = cv2.VideoCapture(0)
-        while self._run_flag:
-            ret, cv_img = cap.read()
-            if ret:
-                self.change_pixmap_signal.emit(cv_img)
-        # shut down capture system
-        cap.release()
-
-    def stop(self):
-        """Sets run flag to False and waits for thread to finish"""
-        self._run_flag = False
-        self.wait()
-
-
 class AppVideo(QWidget):
 
-    def __init__(self, socket):
+    def __init__(self, command_socket, video_socket):
         super().__init__()
-        self.server_socket = socket
-        self.window_width = 1000
-        self.window_height = 800
-        self.thread = None
-        self.thread2 = None
+        self.command_socket = command_socket
+        self.video_socket = video_socket
 
-        self.display_width = 400
-        self.display_height = 400
+        self.thread_video = None
+        self.thread_video_2 = None
+        self.thread_recv = None
+        self.thread_command = None
+
+        self.is_connected = True
+
+        self.window_width = 700
+        self.window_height = 400
+        self.display_width = 320
+        self.display_height = 240
         # Components
         self.image_label = QLabel(self)
+        self.connection_label = QLabel(self)
         self.cbx_friends = QComboBox()
         self.bt_call = QPushButton("Call")
         self.bt_quit = QPushButton("Hang up")
@@ -192,34 +194,56 @@ class AppVideo(QWidget):
         self.setGeometry(10, 10, self.window_width, self.window_height)
 
         self.image_label.resize(self.display_width, self.display_height)
+        self.connection_label.resize(self.display_width, self.display_height)
 
         self.layout.addWidget(self.image_label, 0, 0)
+        self.layout.addWidget(self.connection_label, 0, 1)
         self.layout.addWidget(self.cbx_friends, 1, 0)
         self.layout.addWidget(self.bt_call, 1, 1)
         self.layout.addWidget(self.bt_quit, 1, 2)
         self.setLayout(self.layout)
 
         # create the video capture thread
-        self.thread = VideoThread()
+        self.thread_video = VideoThread()
+        self.thread_video_2 = VideoSendThread(self.video_socket)
+        self.thread_recv = VideoRecvThread(self.video_socket)
         # connect its signal to the update_image slot
-        self.thread.change_pixmap_signal.connect(self.update_image)
+        self.thread_video.change_pixmap_signal.connect(self.update_image)
+        self.thread_recv.change_pixmap_signal.connect(self.update_call_image)
         # start the thread
-        self.thread.start()
-        # self.thread2 = RecvThread(server_socket=self.server_socket)
-        # self.thread2.start()
+        self.thread_video.start()
+        self.thread_recv.start()
+        #
+        self.thread_command = RecvThread(server_socket=self.command_socket)
+        self.thread_command.change_active_users.connect(self.update_active_users)
+        self.thread_command.start()
 
     def closeEvent(self, event):
-        self.thread.stop()
+        self.thread_video.stop()
+        self.thread_video_2.stop()
+        self.thread_recv.stop()
+        self.thread_command.stop()
         event.accept()
 
     @pyqtSlot(np.ndarray)
     def update_image(self, cv_img):
         """Updates the image_label with a new opencv image"""
-        # respond = self._server_socket.recv(2048)
-        # print(respond.decode('UTF-8'))
-        self.server_socket.send(cv_img)
+        self.thread_video_2.image = cv_img
+        self.thread_video_2.start()
+
         qt_img = self.convert_cv_qt(cv_img)
         self.image_label.setPixmap(qt_img)
+
+    @pyqtSlot(np.ndarray)
+    def update_call_image(self, cv_img):
+        """Updates the image_label with a new opencv image"""
+        qt_img = self.convert_cv_qt(cv_img)
+        self.connection_label.setPixmap(qt_img)
+
+    @pyqtSlot(list)
+    def update_active_users(self, usernames):
+        self.cbx_friends.clear()
+        self.cbx_friends.addItems(usernames)
 
     def convert_cv_qt(self, cv_img):
         """Convert from an opencv image to QPixmap"""
@@ -231,6 +255,6 @@ class AppVideo(QWidget):
         return QPixmap.fromImage(p)
 
     def _switch_back(self):
-        self.cams = AppLog(self.server_socket)
+        self.cams = AppLog(self.command_socket, self.video_socket)
         self.cams.show()
         self.close()
