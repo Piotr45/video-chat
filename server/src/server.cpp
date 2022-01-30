@@ -335,7 +335,6 @@ void handle_adding_friends(int event_fd, std::string &friend_name) {
             account.add_friend(get_account(event_fd));
 
             get_account(event_fd).print_friend_list();
-            account.print_friend_list();
 
             str.append("ADD-FRIEND\n1\n");
             send_message(event_fd, str.c_str(), str.size());

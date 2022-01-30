@@ -32,17 +32,12 @@ class VideoChatApp(QMainWindow):
         self.command_socket.connect((server_address, server_port))
         self.video_socket.connect((server_address, server_port))
 
-        self._send_paring_info()
         self.init_ui()
 
     def init_ui(self):
         self.cams = AppLog(self.command_socket, self.video_socket)
         self.cams.show()
         self.close()
-
-    def _send_paring_info(self):
-        self.command_socket.send(bytes(f"COMMAND\n", 'UTF-8'), socket.MSG_NOSIGNAL)
-        self.video_socket.send(bytes(f"VIDEO\n", 'UTF-8'), socket.MSG_NOSIGNAL)
 
 
 class AppLog(QDialog):
