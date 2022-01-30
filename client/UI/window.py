@@ -127,8 +127,10 @@ class AppLog(QDialog):
     @pyqtSlot()
     def _on_click_log(self):
         self._send_account_data('LOGIN')
-        self.command_socket.send(bytes(f"PAIR\nCOMMAND\n{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}\n", 'UTF-8'))
-        self.video_socket.send(bytes(f"PAIR\nVIDEO\n{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}\n", 'UTF-8'))
+        self.command_socket.send(
+            bytes(f"PAIR\nCOMMAND\n{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}\n", 'UTF-8'))
+        self.video_socket.send(
+            bytes(f"PAIR\nVIDEO\n{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}\n", 'UTF-8'))
         self._clear_text_boxes()
         respond = self.command_socket.recv(2048)
         respond = int(respond.decode('UTF-8'))
@@ -176,7 +178,6 @@ class AppVideo(QWidget):
         self.is_connected = False
         self.is_camera_on = False
         self.static = True
-        # self.backup_image = cv2.resize(self.backup_image, (320, 240))
 
         self.window_params = {
             "TITLE": "Video Chat Live",
@@ -208,9 +209,6 @@ class AppVideo(QWidget):
         self.buttons["HANG UP"] = QPushButton("Hang up")
         self.buttons["ADD FRIEND"] = QPushButton("Add friend")
         self.buttons["CAMERA"] = QPushButton("Camera on")
-
-        # for button in self.buttons.values():
-        #     button.resize(100, 30)
 
     def _create_comboboxes(self):
         self.comboboxes["FRIENDS"] = QComboBox(self)
@@ -304,10 +302,9 @@ class AppVideo(QWidget):
     @pyqtSlot()
     def _on_click_hang_up(self):
         print("pressed hang up")
-        if self.comboboxes["FRIENDS"] != "Active friends":
-            self.threads["COMMAND SENDER"].command = "HANG UP"
-            self.threads["COMMAND SENDER"].message = None
-            self.threads["COMMAND SENDER"].start()
+        self.threads["COMMAND SENDER"].command = "HANG UP"
+        self.threads["COMMAND SENDER"].message = None
+        self.threads["COMMAND SENDER"].start()
 
     @pyqtSlot()
     def _on_click_camera(self):
@@ -329,6 +326,9 @@ class AppVideo(QWidget):
         self.threads["COMMAND SENDER"].start()
 
     def closeEvent(self, event):
+        self.threads["COMMAND SENDER"].command = "CLOSE"
+        self.threads["COMMAND SENDER"].message = None
+        self.threads["COMMAND SENDER"].start()
         for thread in self.threads.values():
             if thread.isRunning():
                 thread.terminate()
@@ -362,7 +362,6 @@ class AppVideo(QWidget):
             self.labels["FRIEND CAMERA"].setPixmap(qt_img)
         else:
             self.labels["FRIEND CAMERA"].clear()
-        # self.labels["FRIEND CAMERA"].setPixmap(self.tmp)
 
     @pyqtSlot(list)
     def update_command(self, respond):
@@ -401,13 +400,13 @@ class AppVideo(QWidget):
             if int(tmp) == 1:
                 self.is_connected = False
                 self.labels["FRIEND CAMERA"].clear()
-                if self.threads["IMAGE RECEIVER"].isRunning():
-                    self.threads["IMAGE RECEIVER"].stop()
+                self.threads["IMAGE RECEIVER"].stop()
+                self.threads["IMAGE SENDER"].stop()
 
         print(respond)
         commands_list = ["ADD-FRIEND", "ACTIVE", "CALL", "HANG UP"]
         commands_dict = {command: respond.index(command) for command in commands_list if command in respond}
-        sorted_commands = sorted(commands_dict.items(), key=lambda x:x[1])
+        sorted_commands = sorted(commands_dict.items(), key=lambda x: x[1])
         index_iterator = iter([idx for _, idx in sorted_commands])
         skip = next(index_iterator)
 
