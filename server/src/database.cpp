@@ -8,6 +8,7 @@ private:
     std::string password;
     int fd = -1;
     int vid_fd = -1;
+    bool is_connected = false;
     std::vector<Account> friend_list;
 public:
     Account(const std::string& login, const std::string& password) {
@@ -53,6 +54,12 @@ public:
         }
         return false;
     }
+    void set_is_connected(bool status){
+        this->is_connected = status;
+    }
+    bool get_is_connected() {
+        return this->is_connected;
+    }
 
     Account() {}
 };
@@ -60,8 +67,8 @@ public:
 std::vector<Account> g_users;
 
 void print_accounts(){
-    for (auto account : g_users) {
-        std::cout << account.get_login() << "\t" << account.get_password() << std::endl;
+    for (Account& account : g_users) {
+        std::cout << account.get_login() << "\t" << account.get_password() << "\t" << account.get_fd() << "\t" << account.get_vid_fd() << "\t" << account.get_is_connected()<< std::endl;
     }
 }
 
@@ -81,6 +88,7 @@ int login_account(const std::string& login, const std::string& password) {
     for (auto account : g_users) {
         if (account.get_login() == login) {
             if (account.get_password() == password) {
+                account.set_is_connected(true);
                 return 1;
             } else {
                 return -2;

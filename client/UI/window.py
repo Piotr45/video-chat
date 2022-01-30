@@ -126,6 +126,8 @@ class AppLog(QDialog):
     @pyqtSlot()
     def _on_click_log(self):
         self._send_account_data('LOGIN')
+        self.command_socket.send(bytes(f"PAIR\nCOMMAND\n{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}\n", 'UTF-8'))
+        self.video_socket.send(bytes(f"PAIR\nVIDEO\n{self.text_boxes['Login'].text()}\n{self.text_boxes['Password'].text()}\n", 'UTF-8'))
         self._clear_text_boxes()
         respond = self.command_socket.recv(2048)
         respond = int(respond.decode('UTF-8'))
@@ -167,8 +169,8 @@ class AppVideo(QWidget):
         self.command_socket = command_socket
         self.video_socket = video_socket
 
-        self.is_connected = True
-        self.is_camera_on = True
+        self.is_connected = False
+        self.is_camera_on = False
         # self.backup_image = cv2.resize(self.backup_image, (320, 240))
 
         self.window_params = {
@@ -278,7 +280,7 @@ class AppVideo(QWidget):
         self.threads["COMMAND RECEIVER"].start()
         self.threads["COMMAND SENDER"].command = "ACTIVE"
         self.threads["COMMAND SENDER"].start()
-        self.static = False
+        self.static = True
 
     def _assign_on_click_events(self):
         self.buttons["CALL"].clicked.connect(self._on_click_call)
@@ -377,7 +379,10 @@ class AppVideo(QWidget):
             self.comboboxes["FRIENDS"].addItems(friend_list)
 
         def handle_call(tmp):
-            self.is_connected = True
+            if int(tmp) == 1:
+                self.is_connected = True
+            if int(tmp) == -1:
+                self.is_connected = False
 
         print(respond)
         commands_list = ["ADD-FRIEND", "ACTIVE", "CALL"]
@@ -396,7 +401,7 @@ class AppVideo(QWidget):
             if command == "ADD-FRIEND":
                 handle_adding_friends(tmp[1])
             elif command == "ACTIVE":
-                handle_active_friends(tmp[1:])
+                handle_active_friends(tmp[1:-1])
             elif command == "CALL":
                 handle_call(tmp[1])
 
