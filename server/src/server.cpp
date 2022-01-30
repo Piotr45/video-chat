@@ -291,6 +291,8 @@ void handle_login(int event_fd, const std::string &login, const std::string &pas
         send(event_fd, "-2", strlen("-2"), 0);
     } else if (ret == -3) {
         send(event_fd, "-3", strlen("-3"), 0);
+    } else if (ret == -4) {
+        send(event_fd, "-4", strlen("-4"), 0);
     }
 }
 
@@ -314,9 +316,19 @@ void handle_adding_friends(int event_fd, std::string &friend_name) {
     }
 
     for (Account &account: g_users) {
-        if (account.get_login() == friend_name and account.get_login() != get_account(event_fd).get_login()) {
-            get_account(event_fd).add_friend(account);
+        //and account.get_login() != get_account(event_fd).get_login()
+        if (account.get_login() == friend_name) {
+            for (Account& acc : g_users) {
+                if (acc.get_fd() == event_fd) {
+                    acc.add_friend(account);
+                }
+            }
+//            get_account(event_fd).add_friend(account);
+
             account.add_friend(get_account(event_fd));
+
+            get_account(event_fd).print_friend_list();
+            account.print_friend_list();
 
             str.append("ADD-FRIEND\n1\n");
             send_message(event_fd, str.c_str(), str.size());
@@ -390,6 +402,24 @@ void handle_pairing(int fd, std::string& socket_type, std::string& login, std::s
         }
     }
 }
+
+/**
+ *
+ * @param fd
+ */
+void handle_hang_up(int fd) {
+    std::string str = "HANG UP\n";
+    std::vector<video_pair>::iterator it;
+    for (auto it = g_active_calls.begin(); it != g_active_calls.end(); ++it) {
+        if (it->video_2 == fd or it->video_1 == fd) {
+            break;
+        }
+    }
+    g_active_calls.erase(it);
+    str.append("1\n");
+    send_message(fd, str.c_str(), str.size());
+}
+
 /**
  * This function receives message from client.
  * @param event_fd event descriptor
@@ -411,16 +441,16 @@ void client_recv(int event_fd) {
 //    std::cout << tokens[0] <<std::endl;
 //    if (tokens[0] == "COMMAND") {
 //        g_command_sockets.push_back(event_fd);
-////        for (auto fd: g_command_sockets) {
-////            std::cout << 'C' << fd << std::endl;
-////        }
+//        for (auto fd: g_command_sockets) {
+//            std::cout << 'C' << fd << std::endl;
+//        }
 //        return;
 //    }
 //    if (tokens[0] == "VIDEO") {
 //        g_video_sockets.push_back(event_fd);
-////        for (auto fd: g_video_sockets) {
-////            std::cout << 'V' << fd << std::endl;
-////        }
+//        for (auto fd: g_video_sockets) {
+//            std::cout << 'V' << fd << std::endl;
+//        }
 //        return;
 //    }
     if (tokens[0] == "PAIR") {
@@ -446,9 +476,15 @@ void client_recv(int event_fd) {
     }
     if (tokens[0] == "CALL") {
         handle_call(event_fd, tokens[1]);
+        return;
+    }
+    if (tokens[0] == "HANG UP") {
+        handle_hang_up(event_fd);
+        return;
     }
 }
 
+int dupa = 0;
 /**
  * Receives and forwards messages between two clients.
  * @param event_fd client file descriptor (video socket)
@@ -472,9 +508,8 @@ void recv_and_forward_image(int event_fd) {
     if ((bytes = recv(event_fd, iptr, imgSize, MSG_WAITALL)) == -1) {
         std::cerr << "recv failed, received bytes = " << bytes << std::endl;
     }
-
+//    send(event_fd, img.data, imgSize, MSG_NOSIGNAL);
     for (video_pair& pair : g_active_calls) {
-        std::cout << pair.video_1 << "\t" << pair.video_2 << std::endl;
         if(pair.video_2 == event_fd) {
             send(pair.video_1, img.data, imgSize, MSG_NOSIGNAL);
         }
@@ -482,8 +517,6 @@ void recv_and_forward_image(int event_fd) {
             send(pair.video_2, img.data, imgSize, MSG_NOSIGNAL);
         }
     }
-
-
 }
 
 /**
@@ -522,8 +555,6 @@ void server_process() {
 //            userpool_send("$");
             isFirst = 0;
         }
-
-//        std::cout << g_events[i].data.fd << std::endl;
 
         if (is_video_socket(g_events[i].data.fd)) {
             recv_and_forward_image(g_events[i].data.fd);

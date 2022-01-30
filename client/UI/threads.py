@@ -43,8 +43,8 @@ class VideoSendThread(QThread):
     def run(self) -> None:
         a = pickle.dumps(self.image)
         message = struct.pack("Q", len(a)) + a
-
-        self.conn.sendall(message, socket.MSG_NOSIGNAL)
+        # print(self.image.shape)
+        self.conn.sendall(message)
 
     def stop(self):
         self.wait()
@@ -59,11 +59,11 @@ class VideoRecvThread(QThread):
         self._run_flag = True
 
     def run(self) -> None:
-        # self._run_flag = True
+        self._run_flag = True
         # while self._run_flag:
         data = b""
         payload_size = struct.calcsize("Q")
-        while True:
+        while self._run_flag:
             while len(data) < payload_size:
                 packet = self.conn.recv(4 * 1024)  # 4K
                 if not packet:
@@ -77,7 +77,11 @@ class VideoRecvThread(QThread):
                 data += self.conn.recv(4 * 1024)
             frame_data = data[:msg_size]
             data = data[msg_size:]
-            frame = pickle.loads(frame_data)
+            try:
+                frame = pickle.loads(frame_data)
+            except EOFError:
+                print("Ran out of input")
+            # print(frame.shape)
             self.change_pixmap_signal.emit(frame)
 
     def stop(self):
@@ -114,9 +118,9 @@ class CommandSendThread(QThread):
 
     def run(self):
         if self.command and self.message:
-            self.conn.send(bytes(f"{self.command}\n{self.message}\n", 'UTF-8'), socket.MSG_NOSIGNAL)
+            self.conn.send(bytes(f"{self.command}\n{self.message}\n", 'UTF-8'))
         elif self.command:
-            self.conn.send(bytes(f"{self.command}\n", 'UTF-8'), socket.MSG_NOSIGNAL)
+            self.conn.send(bytes(f"{self.command}\n", 'UTF-8'))
         self.reset()
 
     def stop(self):
@@ -134,4 +138,4 @@ class AuthThread(QThread):
         self._server_socket = server_socket
 
     def run(self) -> None:
-        self._server_socket.send(self.buffer, socket.MSG_NOSIGNAL)
+        self._server_socket.send(self.buffer)

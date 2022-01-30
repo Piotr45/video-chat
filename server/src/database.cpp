@@ -60,6 +60,11 @@ public:
     bool get_is_connected() {
         return this->is_connected;
     }
+    void print_friend_list() {
+        for (Account& account : this->friend_list) {
+            std::cout << account.get_login() << std::endl;
+        }
+    }
 
     Account() {}
 };
@@ -88,6 +93,9 @@ int login_account(const std::string& login, const std::string& password) {
     for (auto account : g_users) {
         if (account.get_login() == login) {
             if (account.get_password() == password) {
+                if (account.get_is_connected()) {
+                    return -4;
+                }
                 account.set_is_connected(true);
                 return 1;
             } else {

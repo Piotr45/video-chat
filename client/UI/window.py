@@ -6,6 +6,7 @@ import time
 
 import cv2
 import imutils
+import os
 import numpy as np
 import socket
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QPushButton, QAction, QLineEdit, QMessageBox, QLabel,
@@ -139,6 +140,9 @@ class AppLog(QDialog):
         elif respond == -3:
             QMessageBox.question(self, 'Log in message', "There is no user with that login!",
                                  QMessageBox.Ok, QMessageBox.Ok)
+        elif respond == -4:
+            QMessageBox.question(self, 'Log in message', "This user is already logged in!",
+                                 QMessageBox.Ok, QMessageBox.Ok)
 
     @pyqtSlot()
     def _on_click_reg(self):
@@ -171,6 +175,7 @@ class AppVideo(QWidget):
 
         self.is_connected = False
         self.is_camera_on = False
+        self.static = True
         # self.backup_image = cv2.resize(self.backup_image, (320, 240))
 
         self.window_params = {
@@ -263,6 +268,9 @@ class AppVideo(QWidget):
         self.create_layout()
         self.setLayout(self.layout)
 
+        self.tmp = QPixmap(f"{os.getcwd()}/UI/pp.png").scaled(320, 240, Qt.KeepAspectRatio,
+                                                              transformMode=Qt.SmoothTransformation)
+        self.tmp2 = cv2.resize(cv2.imread(f"{os.getcwd()}/UI/pp.png"), (320, 240), interpolation=cv2.INTER_AREA)
         # create the video capture thread
         self.create_threads()
         # connect its signal to the update_image slot
@@ -274,13 +282,10 @@ class AppVideo(QWidget):
         if self.is_connected:
             self.threads["IMAGE RECEIVER"].start()
         self._assign_on_click_events()
-        self.tmp = QPixmap("/home/piotr/Projects/video-chat/client/UI/pp.png").scaled(320, 240, Qt.KeepAspectRatio,
-                                                                                      transformMode=Qt.SmoothTransformation)
 
         self.threads["COMMAND RECEIVER"].start()
         self.threads["COMMAND SENDER"].command = "ACTIVE"
         self.threads["COMMAND SENDER"].start()
-        self.static = True
 
     def _assign_on_click_events(self):
         self.buttons["CALL"].clicked.connect(self._on_click_call)
@@ -299,7 +304,10 @@ class AppVideo(QWidget):
     @pyqtSlot()
     def _on_click_hang_up(self):
         print("pressed hang up")
-        self.is_connected = False
+        if self.comboboxes["FRIENDS"] != "Active friends":
+            self.threads["COMMAND SENDER"].command = "HANG UP"
+            self.threads["COMMAND SENDER"].message = None
+            self.threads["COMMAND SENDER"].start()
 
     @pyqtSlot()
     def _on_click_camera(self):
@@ -323,7 +331,7 @@ class AppVideo(QWidget):
     def closeEvent(self, event):
         for thread in self.threads.values():
             if thread.isRunning():
-                thread.stop()
+                thread.terminate()
         self.video_socket.close()
         self.command_socket.close()
         event.accept()
@@ -339,9 +347,7 @@ class AppVideo(QWidget):
 
         if self.is_connected:
             if self.static:
-                self.threads["IMAGE SENDER"].image = cv2.resize(
-                    cv2.imread("/home/piotr/Projects/video-chat/client/UI/pp.png"), (320, 240),
-                    interpolation=cv2.INTER_AREA)
+                self.threads["IMAGE SENDER"].image = self.tmp2
             else:
                 self.threads["IMAGE SENDER"].image = cv_img
             self.threads["IMAGE SENDER"].start()
@@ -350,9 +356,12 @@ class AppVideo(QWidget):
     def update_call_image(self, cv_img):
         """Updates the image_label with a new opencv image"""
         if self.is_connected:
-            self.threads["IMAGE RECEIVER"].start()
-        qt_img = self.convert_cv_qt(cv_img)
-        self.labels["FRIEND CAMERA"].setPixmap(qt_img)
+            if not self.threads["IMAGE RECEIVER"].isRunning():
+                self.threads["IMAGE RECEIVER"].start()
+            qt_img = self.convert_cv_qt(cv_img)
+            self.labels["FRIEND CAMERA"].setPixmap(qt_img)
+        else:
+            self.labels["FRIEND CAMERA"].clear()
         # self.labels["FRIEND CAMERA"].setPixmap(self.tmp)
 
     @pyqtSlot(list)
@@ -381,11 +390,22 @@ class AppVideo(QWidget):
         def handle_call(tmp):
             if int(tmp) == 1:
                 self.is_connected = True
+                if not self.threads["IMAGE RECEIVER"].isRunning():
+                    self.threads["IMAGE RECEIVER"].start()
             if int(tmp) == -1:
                 self.is_connected = False
+                if self.threads["IMAGE RECEIVER"].isRunning():
+                    self.threads["IMAGE RECEIVER"].stop()
+
+        def handle_hang_up(tmp):
+            if int(tmp) == 1:
+                self.is_connected = False
+                self.labels["FRIEND CAMERA"].clear()
+                if self.threads["IMAGE RECEIVER"].isRunning():
+                    self.threads["IMAGE RECEIVER"].stop()
 
         print(respond)
-        commands_list = ["ADD-FRIEND", "ACTIVE", "CALL"]
+        commands_list = ["ADD-FRIEND", "ACTIVE", "CALL", "HANG UP"]
         commands_dict = {command: respond.index(command) for command in commands_list if command in respond}
         sorted_commands = sorted(commands_dict.items(), key=lambda x:x[1])
         index_iterator = iter([idx for _, idx in sorted_commands])
@@ -404,6 +424,8 @@ class AppVideo(QWidget):
                 handle_active_friends(tmp[1:-1])
             elif command == "CALL":
                 handle_call(tmp[1])
+            elif command == "HANG UP":
+                handle_hang_up(tmp[1])
 
     def convert_cv_qt(self, cv_img):
         """Convert from an opencv image to QPixmap"""
