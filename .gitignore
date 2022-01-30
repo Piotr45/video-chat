@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+# Client files
+client/.idea
+client/UI/__pycache__
+# Server files
+server/.idea
