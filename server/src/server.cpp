@@ -211,6 +211,13 @@ Account get_account(int fd) {
         }
     }
 }
+Account get_account2(int fd) {
+    for (Account &account: g_users) {
+        if (account.get_vid_fd() == fd) {
+            return account;
+        }
+    }
+}
 
 /**
  * Send all active friends to all active users.
@@ -328,7 +335,6 @@ void handle_adding_friends(int event_fd, std::string &friend_name) {
             account.add_friend(get_account(event_fd));
 
             get_account(event_fd).print_friend_list();
-            account.print_friend_list();
 
             str.append("ADD-FRIEND\n1\n");
             send_message(event_fd, str.c_str(), str.size());
@@ -367,7 +373,6 @@ void handle_call(int event_fd, std::string& name) {
             video_pair pair;
             pair.video_1 = account.get_vid_fd();
             pair.video_2 = get_account(event_fd).get_vid_fd();
-//            std::cout << get_account(event_fd).get_vid_fd() << std::endl;
             // Respond to client
             send_message(event_fd, call.c_str(), call.size());
             // Respond to friend
@@ -382,11 +387,11 @@ void handle_call(int event_fd, std::string& name) {
 }
 
 /**
- *
- * @param fd
- * @param socket_type
- * @param login
- * @param password
+ * Handles paring sockets
+ * @param fd file descriptor
+ * @param socket_type type of file descriptor (COMMAND, VIDEO)
+ * @param login user login
+ * @param password user password
  */
 void handle_pairing(int fd, std::string& socket_type, std::string& login, std::string& password) {
     for (Account& account : g_users) {
@@ -404,20 +409,29 @@ void handle_pairing(int fd, std::string& socket_type, std::string& login, std::s
 }
 
 /**
- *
- * @param fd
+ * Handles hanging up
+ * @param fd file descriptor (command descriptor)
  */
 void handle_hang_up(int fd) {
     std::string str = "HANG UP\n";
-    std::vector<video_pair>::iterator it;
-    for (auto it = g_active_calls.begin(); it != g_active_calls.end(); ++it) {
-        if (it->video_2 == fd or it->video_1 == fd) {
+    for (video_pair& pair : g_active_calls) {
+        if (pair.video_2 == get_account(fd).get_vid_fd()) {
+            str.append("1\n");
+            send_message(fd, str.c_str(), str.size());
+            send_message(get_account2(pair.video_1).get_fd(), str.c_str(), str.size());
+            pair.video_1 = -1;
+            pair.video_2 = -1;
+            break;
+        }
+        if (pair.video_1 == get_account(fd).get_vid_fd()) {
+            str.append("1\n");
+            send_message(fd, str.c_str(), str.size());
+            send_message(get_account2(pair.video_2).get_fd(), str.c_str(), str.size());
+            pair.video_1 = -1;
+            pair.video_2 = -1;
             break;
         }
     }
-    g_active_calls.erase(it);
-    str.append("1\n");
-    send_message(fd, str.c_str(), str.size());
 }
 
 /**
@@ -438,21 +452,6 @@ void client_recv(int event_fd) {
     }
 
     std::vector<std::string> tokens = split(r_buffer, '\n');
-//    std::cout << tokens[0] <<std::endl;
-//    if (tokens[0] == "COMMAND") {
-//        g_command_sockets.push_back(event_fd);
-//        for (auto fd: g_command_sockets) {
-//            std::cout << 'C' << fd << std::endl;
-//        }
-//        return;
-//    }
-//    if (tokens[0] == "VIDEO") {
-//        g_video_sockets.push_back(event_fd);
-//        for (auto fd: g_video_sockets) {
-//            std::cout << 'V' << fd << std::endl;
-//        }
-//        return;
-//    }
     if (tokens[0] == "PAIR") {
         handle_pairing(event_fd, tokens[1], tokens[2], tokens[3]);
         return;

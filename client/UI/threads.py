@@ -4,7 +4,6 @@ import pickle
 from PyQt5.QtCore import QThread, pyqtSignal
 import numpy as np
 import cv2
-import socket
 
 
 class VideoThread(QThread):
@@ -25,6 +24,8 @@ class VideoThread(QThread):
                 ret, cv_img = cap.read()
                 if ret:
                     self.change_pixmap_signal.emit(cv_img)
+                else:
+                    self.change_pixmap_signal.emit(np.zeros((320, 240)))
             # shut down capture system
             cap.release()
 
@@ -74,15 +75,21 @@ class VideoRecvThread(QThread):
             msg_size = struct.unpack("Q", packed_msg_size)[0]
 
             while len(data) < msg_size:
-                data += self.conn.recv(4 * 1024)
+                if not self._run_flag:
+                    break
+                try:
+                    data += self.conn.recv(4 * 1024)
+                except ConnectionResetError:
+                    break
             frame_data = data[:msg_size]
             data = data[msg_size:]
             try:
                 frame = pickle.loads(frame_data)
+                self.change_pixmap_signal.emit(frame)
             except EOFError:
                 print("Ran out of input")
-            # print(frame.shape)
-            self.change_pixmap_signal.emit(frame)
+            except pickle.UnpicklingError:
+                print("Unpickling error")
 
     def stop(self):
         self._run_flag = False
