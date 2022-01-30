@@ -6,8 +6,8 @@ class Account {
 private:
     std::string login;
     std::string password;
-    int fd = 0;
-    int vid_fd = 0;
+    int fd = -1;
+    int vid_fd = -1;
     std::vector<Account> friend_list;
 public:
     Account(const std::string& login, const std::string& password) {
@@ -26,7 +26,7 @@ public:
     int get_vid_fd() {
         return this->vid_fd;
     }
-    std::vector<Account> get_friend_list() {
+    std::vector<Account> get_friend_list() const {
         return this->friend_list;
     }
     void set_fd(int socket) {
@@ -38,12 +38,23 @@ public:
     void set_friend_list(std::vector<Account> friend_list) {
         this->friend_list = friend_list;
     }
-    void add_friend(Account friend_acc) {
+    void add_friend(const Account &friend_acc) {
         this->friend_list.push_back(friend_acc);
     }
-//    void remove_friend(Account friend_acc) {
-//        
-//    }
+    void reset_fd() {
+        set_vid_fd(-1);
+        set_fd(-1);
+    }
+    bool in_friend_list(std::string& name){
+        for (Account& account : get_friend_list()) {
+            if(account.get_login() == name) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    Account() {}
 };
 
 std::vector<Account> g_users;

@@ -1,18 +1,18 @@
-#include <stdio.h>
-#include <stdlib.h>
+#include <cstdio>
+#include <cstdlib>
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <arpa/inet.h>
 #include <iostream>
-#include <string.h>
+#include <cstring>
 #include <unistd.h>
 #include <opencv2/opencv.hpp>
 #include "database.cpp"
 
-#define MAX_CLIENT   10
+#define MAX_CLIENT   16
 #define DEFAULT_PORT 3108
 #define MAX_EVENTS   100
-#define MAX_BUFFER_SIZE  1024
+#define MAX_BUFFER_SIZE  2048
 
 
 int g_svr_sockfd;                   /* global server socket fd */
@@ -32,16 +32,14 @@ std::vector<int> g_command_sockets;
 std::vector<int> g_video_sockets;
 
 struct epoll_event g_events[MAX_EVENTS];
-char buf[MAX_BUFFER_SIZE];
 
 /**
  * Function prototypes
 */
-void init_data(void);               /* initialize data. */
+void init_data();               /* initialize data. */
 void init_server(int svr_port);     /* server socket bind/listen */
-void epoll_init(void);              /* epoll fd create */
+void epoll_init();              /* epoll fd create */
 void epoll_cli_add(int cli_fd);     /* client fd add to epoll set */
-void respond(int cli_fd);           /* responds user of client fd */
 
 void userpool_add(int cli_fd, char *cli_ip); /* Adds user to pool */
 
@@ -49,7 +47,7 @@ void userpool_add(int cli_fd, char *cli_ip); /* Adds user to pool */
 /**
  * This function initializes client structure values.
  */
-void init_data(void) {
+void init_data() {
     int i;
 
     for (i = 0; i < MAX_CLIENT; i++) {
@@ -62,7 +60,7 @@ void init_data(void) {
  * @param svr_port server port (has to be positive e.g. 1234)
  */
 void init_server(int svr_port) {
-    struct sockaddr_in serv_addr;
+    struct sockaddr_in serv_addr{};
 
     /* Open TCP Socket */
     if ((g_svr_sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -102,8 +100,8 @@ void init_server(int svr_port) {
 /**
  * This function initializes epoll.
  */
-void epoll_init(void) {
-    struct epoll_event events;
+void epoll_init() {
+    struct epoll_event events{};
 
     g_epoll_fd = epoll_create(MAX_EVENTS);
     if (g_epoll_fd < 0) {
@@ -111,7 +109,7 @@ void epoll_init(void) {
         close(g_svr_sockfd);
         exit(0);
     }
-    fprintf(stdout, "[START] Epoll creation success.\n");
+    fprintf(stdout, "[START] Created epoll file descriptor with success.\n");
 
     /* event control set */
     events.events = EPOLLIN;
@@ -119,7 +117,7 @@ void epoll_init(void) {
 
     /* server events set(read for accept) */
     if (epoll_ctl(g_epoll_fd, EPOLL_CTL_ADD, g_svr_sockfd, &events) < 0) {
-        fprintf(stderr, "[ERROR] Epoll Control Fails : TODO\n");
+        fprintf(stderr, "[ERROR] Epoll Control Fails: <EPOLL_CTL_ADD> failed.\n");
         close(g_svr_sockfd);
         close(g_epoll_fd);
         exit(0);
@@ -129,12 +127,12 @@ void epoll_init(void) {
 }
 
 /**
- * This function adds client to epoll events.
+ * This function adds client file descriptor to epoll events.
  * @param cli_fd client socket descriptor.
  */
 void epoll_cli_add(int cli_fd) {
 
-    struct epoll_event events;
+    struct epoll_event events{};
 
     /* event control set for read event */
     events.events = EPOLLIN;
@@ -182,47 +180,61 @@ void userpool_delete(int cli_fd) {
 }
 
 /**
- * This function sends message to all users from userpool.
- * @param buffer message buffer
+ * Funtion that sends message to client.
+ * @tparam T type of message
+ * @param fd client file descriptor
+ * @param message actual message
+ * @param message_size message length (size)
  */
-void userpool_send(char *buffer) {
-    int i;
-    int len;
+template<typename T>
+void send_message(int fd, const T &message, int message_size) {
+    int bytes;
 
-    len = strlen(buffer);
-
-    for (i = 0; i < MAX_CLIENT; i++) {
-        if (g_client[i].cli_sockfd != -1) {
-            len = send(g_client[i].cli_sockfd, buffer, len, 0);
-            fprintf(stdout, "[DEBUG] Send to %d : %s\n", g_client[i].cli_sockfd, buffer);
-            // TODO code
-        }
+    if ((bytes = send(fd, message, message_size, 0)) == -1) {
+        fprintf(stderr, "[ERROR] Send failed, send %d bytes", bytes);
     }
-
 }
 
 /**
- * Sends information about all active accounts to all active users.
+ * Gets account using client file descriptor.
+ * @param fd client file descriptor
+ * @return account associated with client file descriptor
  */
-void send_active_accounts(int fd){
-    std::string str;
-    int len;
-    str.append("ACTIVE\n");
-    for (auto account : g_active_users) {
-        str.append(account.get_login());
-        str.push_back('\n');
+Account get_account(int fd) {
+    for (Account &account: g_users) {
+        if (account.get_fd() == fd) {
+            return account;
+        }
     }
-    std::cout << str << std::endl;
-
-    if ((len = send(fd, str.c_str(), str.size(), 0)) == -1 ){
-        std::cerr << "send failed, send bytes = " << len << std::endl;
-        return;
-    }
-//    fprintf(stdout, "[DEBUG] Send to %d : %s\n", fd, str.c_str());
 }
 
+/**
+ * Send all active friends to all active users.
+ */
+void send_active_friends() {
+    std::string str;
+    int bytes;
+    for (int fd: g_command_sockets) {
+        str.clear();
+        str.append("ACTIVE\n");
+//        get_account(fd);
+        for (Account &account: get_account(fd).get_friend_list()) {
+            str.append(account.get_login());
+            str.push_back('\n');
+        }
+        if ((bytes = send(fd, str.c_str(), str.size(), 0)) == -1) {
+            fprintf(stderr, "[ERROR] Send failed, send %d bytes", bytes);
+        }
+    }
+}
+
+/**
+ * Checks if file descriptor belongs to video sockets.
+ * @param event_fd client video socket
+ * @return True if file descriptor belongs to video sockets, otherwise False.
+ */
 bool is_video_socket(int event_fd) {
-    for (auto socket : g_video_sockets) {
+    for (auto socket: g_video_sockets) {
         if (socket == event_fd) {
             return true;
         }
@@ -230,8 +242,13 @@ bool is_video_socket(int event_fd) {
     return false;
 }
 
-void add_connection(int event_fd, const std::string& login) {
-    for (auto account: g_users) {
+/**
+ *
+ * @param event_fd
+ * @param login
+ */
+void add_connection(int event_fd, const std::string &login) {
+    for (Account &account: g_users) {
         if (account.get_login() == login) {
             account.set_fd(event_fd);
 
@@ -241,34 +258,74 @@ void add_connection(int event_fd, const std::string& login) {
     }
 }
 
-void handle_registration(int event_fd, const std::string& login, const std::string& password) {
+/**
+ * Handles registration process.
+ * @param event_fd client file descriptor (command socket)
+ * @param login user login
+ * @param password user password
+ */
+void handle_registration(int event_fd, const std::string &login, const std::string &password) {
     int ret = register_account(login, password);
     if (ret == 1) {
         send(event_fd, "1", strlen("1"), 0);
-    }
-    else if (ret == -1) {
+    } else if (ret == -1) {
         send(event_fd, "-1", strlen("-1"), 0);
     }
 }
 
-void handle_login(int event_fd, const std::string& login, const std::string& password) {
+/**
+ * Handles log in process
+ * @param event_fd client file descriptor (command socket)
+ * @param login user login
+ * @param password user password
+ */
+void handle_login(int event_fd, const std::string &login, const std::string &password) {
     int ret = login_account(login, password);
     if (ret == 1) {
         add_connection(event_fd, login);
         send(event_fd, "1", strlen("1"), 0);
-    }
-    else if (ret == -2) {
+    } else if (ret == -2) {
         send(event_fd, "-2", strlen("-2"), 0);
-    }
-    else if (ret == -3) {
+    } else if (ret == -3) {
         send(event_fd, "-3", strlen("-3"), 0);
     }
 }
 
-void handle_active_accounts(int event_fd) {
+/**
+ * Handles adding friend process.
+ * @param event_fd client file descriptor (command socket)
+ * @param friend_name user name that we want add to friend list
+ */
+void handle_adding_friends(int event_fd, std::string &friend_name) {
+    std::string str;
 
+    if (get_account(event_fd).in_friend_list(friend_name)) {
+        str.append("ADD-FRIEND\n-2\n");
+        send_message(event_fd, str.c_str(), str.size());
+        return;
+    }
+    if (get_account(event_fd).get_login() == friend_name) {
+        str.append("ADD-FRIEND\n-3\n");
+        send_message(event_fd, str.c_str(), str.size());
+        return;
+    }
+
+    for (Account &account: g_users) {
+        if (account.get_login() == friend_name and account.get_login() != get_account(event_fd).get_login()) {
+            get_account(event_fd).add_friend(account);
+            account.add_friend(get_account(event_fd));
+
+            str.append("ADD-FRIEND\n1\n");
+            send_message(event_fd, str.c_str(), str.size());
+            return;
+        }
+    }
+    str.append("ADD-FRIEND\n-1\n");
+    send_message(event_fd, str.c_str(), str.size());
 }
-void handle_call(int event_fd){
+
+
+void handle_call(int event_fd) {
 
 }
 
@@ -280,7 +337,6 @@ void handle_call(int event_fd){
 void client_recv(int event_fd) {
     char r_buffer[MAX_BUFFER_SIZE];
     int len;
-    // TODO packet check, etc.
 
     /* read from socket */
     len = recv(event_fd, r_buffer, MAX_BUFFER_SIZE, 0);
@@ -292,12 +348,20 @@ void client_recv(int event_fd) {
     }
 
     std::vector<std::string> tokens = split(r_buffer, '\n');
-
+//    std::cout << tokens[0] <<std::endl;
     if (tokens[0] == "COMMAND") {
         g_command_sockets.push_back(event_fd);
+        for (auto fd: g_command_sockets) {
+            std::cout << 'C' << fd << std::endl;
+        }
+        return;
     }
     if (tokens[0] == "VIDEO") {
         g_video_sockets.push_back(event_fd);
+        for (auto fd: g_video_sockets) {
+            std::cout << 'V' << fd << std::endl;
+        }
+        return;
     }
     if (tokens[0] == "REGISTER") {
         handle_registration(event_fd, tokens[1], tokens[2]);
@@ -307,47 +371,43 @@ void client_recv(int event_fd) {
         handle_login(event_fd, tokens[1], tokens[2]);
         return;
     }
-    if (tokens[0] == "ACTIVE-USERS") {
-        send_active_accounts(event_fd);
+    if (tokens[0] == "ACTIVE") {
+        send_active_friends();
     }
-//    std::cout << get_video_socket(event_fd) << std::endl;
+    if (tokens[0] == "ADD-FRIEND") {
+        handle_adding_friends(event_fd, tokens[1]);
+        send_active_friends();
+    }
 }
 
-void client_recv2(int event_fd) {
+/**
+ * Receives and forwards messages between two clients.
+ * @param event_fd client file descriptor (video socket)
+ */
+void recv_and_forward_image(int event_fd) {
     cv::Mat img;
     img = cv::Mat::zeros(240, 320, CV_8UC3);
     int imgSize = img.total() * img.elemSize();
     uchar *iptr = img.data;
     int bytes = 0;
-    int key;
 
-    //make img continuos
+    // Make image continuous
     if (!img.isContinuous()) {
         img = img.clone();
     }
 
-//    cv::namedWindow("CV Video Client", 1);
-
-    while (key != 'q') {
-
-        if ((bytes = recv(event_fd, iptr, imgSize, MSG_WAITALL)) == -1) {
-            std::cerr << "recv failed, received bytes = " << bytes << std::endl;
-        }
-
-//        cv::imshow("CV Video Client", img);
-
-        send(event_fd, img.data, imgSize, 0);
-
-        if ((key = cv::waitKey(10)) >= 0) break;
+    if ((bytes = recv(event_fd, iptr, imgSize, MSG_WAITALL)) == -1) {
+        std::cerr << "recv failed, received bytes = " << bytes << std::endl;
     }
 
+    send(event_fd, img.data, imgSize, MSG_NOSIGNAL);
 }
 
 /**
  * This function processes epoll events.
  */
-void server_process(void) {
-    struct sockaddr_in cli_addr;
+void server_process() {
+    struct sockaddr_in cli_addr{};
     int i, nfds;
     int cli_sockfd;
     int cli_len = sizeof(cli_addr);
@@ -383,13 +443,14 @@ void server_process(void) {
 //        std::cout << g_events[i].data.fd << std::endl;
 
         if (is_video_socket(g_events[i].data.fd)) {
-            client_recv2(g_events[i].data.fd);
+            recv_and_forward_image(g_events[i].data.fd);
         } else {
             client_recv(g_events[i].data.fd);
         }
 
 //        send_active_accounts();
     } /* end of for 0-nfds */
+
 }
 
 /**

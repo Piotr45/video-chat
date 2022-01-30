@@ -16,16 +16,17 @@ class VideoThread(QThread):
         self.encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
 
     def run(self):
-        # capture from web cam
-        cap = cv2.VideoCapture(0)
-        cap.set(3, 320)
-        cap.set(4, 240)
         while self._run_flag:
-            ret, cv_img = cap.read()
-            if ret:
-                self.change_pixmap_signal.emit(cv_img)
-        # shut down capture system
-        cap.release()
+            # capture from web cam
+            cap = cv2.VideoCapture(0)
+            cap.set(3, 320)
+            cap.set(4, 240)
+            while self._run_flag:
+                ret, cv_img = cap.read()
+                if ret:
+                    self.change_pixmap_signal.emit(cv_img)
+            # shut down capture system
+            cap.release()
 
     def stop(self):
         """Sets run flag to False and waits for thread to finish"""
@@ -43,7 +44,7 @@ class VideoSendThread(QThread):
         a = pickle.dumps(self.image)
         message = struct.pack("Q", len(a)) + a
 
-        self.conn.sendall(message)
+        self.conn.sendall(message, socket.MSG_NOSIGNAL)
 
     def stop(self):
         self.wait()
@@ -55,37 +56,37 @@ class VideoRecvThread(QThread):
     def __init__(self, server_socket):
         super().__init__()
         self.conn = server_socket
-        self.image = None
         self._run_flag = True
 
     def run(self) -> None:
-        while self._run_flag:
-            data = b""
-            payload_size = struct.calcsize("Q")
-            while True:
-                while len(data) < payload_size:
-                    packet = self.conn.recv(4 * 1024)  # 4K
-                    if not packet:
-                        break
-                    data += packet
-                packed_msg_size = data[:payload_size]
-                data = data[payload_size:]
-                msg_size = struct.unpack("Q", packed_msg_size)[0]
+        # self._run_flag = True
+        # while self._run_flag:
+        data = b""
+        payload_size = struct.calcsize("Q")
+        while True:
+            while len(data) < payload_size:
+                packet = self.conn.recv(4 * 1024)  # 4K
+                if not packet:
+                    break
+                data += packet
+            packed_msg_size = data[:payload_size]
+            data = data[payload_size:]
+            msg_size = struct.unpack("Q", packed_msg_size)[0]
 
-                while len(data) < msg_size:
-                    data += self.conn.recv(4 * 1024)
-                frame_data = data[:msg_size]
-                data = data[msg_size:]
-                frame = pickle.loads(frame_data)
-                self.change_pixmap_signal.emit(frame)
+            while len(data) < msg_size:
+                data += self.conn.recv(4 * 1024)
+            frame_data = data[:msg_size]
+            data = data[msg_size:]
+            frame = pickle.loads(frame_data)
+            self.change_pixmap_signal.emit(frame)
 
     def stop(self):
         self._run_flag = False
         self.wait()
 
 
-class RecvThread(QThread):
-    change_active_users = pyqtSignal(list)
+class CommandRecvThread(QThread):
+    command_respond = pyqtSignal(list)
 
     def __init__(self, server_socket):
         super().__init__()
@@ -93,19 +94,37 @@ class RecvThread(QThread):
         self._run_flag = True
 
     def run(self):
+        # print(f"Run command {self.command} with message {self.message}")
         while self._run_flag:
-            self.conn.sendall(bytes(f"ACTIVE-USERS\n", 'utf-8'))
-            respond = self.conn.recv(1024*2)
-            respond = respond.decode('UTF-8')
-            data = respond.split('\n')[1:-1]
-            data.insert(0, "Active Users")
-            # print(data)
-            # self.stop()
-            self.change_active_users.emit(data)
+            respond = self.conn.recv(1024 * 2).decode('UTF-8')
+            self.command_respond.emit(respond.split('\n'))
 
     def stop(self):
         self._run_flag = False
         self.wait()
+
+
+class CommandSendThread(QThread):
+
+    def __init__(self, server_socket):
+        super().__init__()
+        self.conn = server_socket
+        self.command = None
+        self.message = None
+
+    def run(self):
+        if self.command and self.message:
+            self.conn.send(bytes(f"{self.command}\n{self.message}\n", 'UTF-8'), socket.MSG_NOSIGNAL)
+        elif self.command:
+            self.conn.send(bytes(f"{self.command}\n", 'UTF-8'), socket.MSG_NOSIGNAL)
+        self.reset()
+
+    def stop(self):
+        self.wait()
+
+    def reset(self):
+        self.command = None
+        self.message = None
 
 
 class AuthThread(QThread):
@@ -115,4 +134,4 @@ class AuthThread(QThread):
         self._server_socket = server_socket
 
     def run(self) -> None:
-        self._server_socket.send(self.buffer)
+        self._server_socket.send(self.buffer, socket.MSG_NOSIGNAL)

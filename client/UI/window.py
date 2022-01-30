@@ -1,4 +1,5 @@
 import pickle
+import signal
 import struct
 from datetime import datetime
 import time
@@ -11,24 +12,25 @@ from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QPushButton, QA
                              QDialog, QVBoxLayout, QGridLayout, QHBoxLayout, QFormLayout, QComboBox)
 from PyQt5.QtGui import QIcon, QFont, QPicture, QImage, QPixmap
 from PyQt5.QtCore import pyqtSlot, Qt
-from UI.threads import AuthThread, RecvThread, VideoThread, VideoSendThread, VideoRecvThread
+from UI.threads import AuthThread, CommandRecvThread, VideoThread, VideoSendThread, VideoRecvThread, CommandSendThread
 
 
-SERVER_ADDRESS = '0.0.0.0'
-SERVER_PORT = 3108
+# SERVER_ADDRESS = '0.0.0.0'
+# SERVER_PORT = 3108
 
 
 class VideoChatApp(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, server_address, server_port):
         super().__init__()
         self.cams = None
+
         self.command_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.video_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.command_socket.connect((SERVER_ADDRESS, SERVER_PORT))
-        self.video_socket.connect((SERVER_ADDRESS, SERVER_PORT))
-        print(self.video_socket)
-        print(self.command_socket)
+
+        self.command_socket.connect((server_address, server_port))
+        self.video_socket.connect((server_address, server_port))
+
         self._send_paring_info()
         self.init_ui()
 
@@ -38,10 +40,8 @@ class VideoChatApp(QMainWindow):
         self.close()
 
     def _send_paring_info(self):
-        timestamp = int(datetime.timestamp(datetime.now()))
-        print(timestamp)
-        self.command_socket.send(bytes(f"COMMAND\n", 'UTF-8'))
-        self.video_socket.send(bytes(f"VIDEO\n", 'UTF-8'))
+        self.command_socket.send(bytes(f"COMMAND\n", 'UTF-8'), socket.MSG_NOSIGNAL)
+        self.video_socket.send(bytes(f"VIDEO\n", 'UTF-8'), socket.MSG_NOSIGNAL)
 
 
 class AppLog(QDialog):
@@ -167,83 +167,238 @@ class AppVideo(QWidget):
         self.command_socket = command_socket
         self.video_socket = video_socket
 
-        self.thread_video = None
-        self.thread_video_2 = None
-        self.thread_recv = None
-        self.thread_command = None
-
         self.is_connected = True
+        self.is_camera_on = True
+        # self.backup_image = cv2.resize(self.backup_image, (320, 240))
 
-        self.window_width = 700
-        self.window_height = 400
-        self.display_width = 320
-        self.display_height = 240
-        # Components
-        self.image_label = QLabel(self)
-        self.connection_label = QLabel(self)
-        self.cbx_friends = QComboBox()
-        self.bt_call = QPushButton("Call")
-        self.bt_quit = QPushButton("Hang up")
-        # Layouts
-        self.layout = QGridLayout()
+        self.window_params = {
+            "TITLE": "Video Chat Live",
+            "WIDTH": 700,
+            "HEIGHT": 400
+        }
+        self.label_params = {
+            "WIDTH": 320,
+            "HEIGHT": 240
+        }
+
+        self.buttons = dict()
+        self.labels = dict()
+        self.comboboxes = dict()
+        self.textboxes = dict()
+        self.threads = dict()
+        self.layout = None
 
         self.init_ui()
 
+    def create_components(self):
+        self._create_buttons()
+        self._create_comboboxes()
+        self._create_textboxes()
+        self._create_labels()
+
+    def _create_buttons(self):
+        self.buttons["CALL"] = QPushButton("Call")
+        self.buttons["HANG UP"] = QPushButton("Hang up")
+        self.buttons["ADD FRIEND"] = QPushButton("Add friend")
+        self.buttons["CAMERA"] = QPushButton("Camera on")
+
+        # for button in self.buttons.values():
+        #     button.resize(100, 30)
+
+    def _create_comboboxes(self):
+        self.comboboxes["FRIENDS"] = QComboBox(self)
+        self.comboboxes["FRIENDS"].addItem("Active friends")
+
+    def _create_labels(self):
+        self.labels["MY CAMERA"] = QLabel(self)
+        self.labels["FRIEND CAMERA"] = QLabel(self)
+
+        self.labels["MY CAMERA"].resize(self.label_params["WIDTH"], self.label_params["HEIGHT"])
+        self.labels["FRIEND CAMERA"].resize(self.label_params["WIDTH"], self.label_params["HEIGHT"])
+
+    def _create_textboxes(self):
+        self.textboxes["FRIEND NAME"] = QLineEdit(self)
+
+    def create_layout(self):
+        self.layout = QVBoxLayout()
+        self._add_widgets_to_layout()
+
+    def create_threads(self):
+        self.threads["CAMERA UPDATER"] = VideoThread()
+        self.threads["COMMAND RECEIVER"] = CommandRecvThread(self.command_socket)
+        self.threads["COMMAND SENDER"] = CommandSendThread(self.command_socket)
+        self.threads["IMAGE SENDER"] = VideoSendThread(self.video_socket)
+        self.threads["IMAGE RECEIVER"] = VideoRecvThread(self.video_socket)
+
+    def _add_widgets_to_layout(self):
+        image_layout = QHBoxLayout()
+        components_layout = QVBoxLayout()
+        line_one_layout = QHBoxLayout()
+        line_two_layout = QHBoxLayout()
+
+        image_layout.addWidget(self.labels["MY CAMERA"])
+        image_layout.addWidget(self.labels["FRIEND CAMERA"])
+
+        line_one_layout.addWidget(self.buttons["CAMERA"])
+        line_one_layout.addWidget(self.buttons["ADD FRIEND"])
+        line_one_layout.addWidget(self.textboxes["FRIEND NAME"])
+
+        line_two_layout.addWidget(self.buttons["HANG UP"])
+        line_two_layout.addWidget(self.buttons["CALL"])
+        line_two_layout.addWidget(self.comboboxes["FRIENDS"])
+
+        components_layout.addLayout(line_one_layout)
+        components_layout.addLayout(line_two_layout)
+        self.layout.addLayout(image_layout)
+        self.layout.addLayout(components_layout)
+
     def init_ui(self):
-        self.setWindowTitle("Vide Chat Live")
-        self.setGeometry(10, 10, self.window_width, self.window_height)
+        self.setWindowTitle(self.window_params["TITLE"])
+        self.setGeometry(10, 10, self.window_params["WIDTH"], self.window_params["HEIGHT"])
 
-        self.image_label.resize(self.display_width, self.display_height)
-        self.connection_label.resize(self.display_width, self.display_height)
+        self.create_components()
 
-        self.layout.addWidget(self.image_label, 0, 0)
-        self.layout.addWidget(self.connection_label, 0, 1)
-        self.layout.addWidget(self.cbx_friends, 1, 0)
-        self.layout.addWidget(self.bt_call, 1, 1)
-        self.layout.addWidget(self.bt_quit, 1, 2)
+        self.create_layout()
         self.setLayout(self.layout)
 
         # create the video capture thread
-        self.thread_video = VideoThread()
-        self.thread_video_2 = VideoSendThread(self.video_socket)
-        self.thread_recv = VideoRecvThread(self.video_socket)
+        self.create_threads()
         # connect its signal to the update_image slot
-        self.thread_video.change_pixmap_signal.connect(self.update_image)
-        self.thread_recv.change_pixmap_signal.connect(self.update_call_image)
-        # start the thread
-        self.thread_video.start()
-        self.thread_recv.start()
-        #
-        self.thread_command = RecvThread(server_socket=self.command_socket)
-        self.thread_command.change_active_users.connect(self.update_active_users)
-        self.thread_command.start()
+        self.threads["CAMERA UPDATER"].change_pixmap_signal.connect(self.update_image)
+        self.threads["IMAGE RECEIVER"].change_pixmap_signal.connect(self.update_call_image)
+        self.threads["COMMAND RECEIVER"].command_respond.connect(self.update_command)
+
+        self.threads["CAMERA UPDATER"].start()
+        if self.is_connected:
+            self.threads["IMAGE RECEIVER"].start()
+        self._assign_on_click_events()
+        self.tmp = QPixmap("/home/piotr/Projects/video-chat/client/UI/pp.png").scaled(320, 240, Qt.KeepAspectRatio,
+                                                                                      transformMode=Qt.SmoothTransformation)
+
+        self.threads["COMMAND RECEIVER"].start()
+        self.threads["COMMAND SENDER"].command = "ACTIVE"
+        self.threads["COMMAND SENDER"].start()
+        self.static = False
+
+    def _assign_on_click_events(self):
+        self.buttons["CALL"].clicked.connect(self._on_click_call)
+        self.buttons["HANG UP"].clicked.connect(self._on_click_hang_up)
+        self.buttons["CAMERA"].clicked.connect(self._on_click_camera)
+        self.buttons["ADD FRIEND"].clicked.connect(self._on_click_add_friend)
+
+    @pyqtSlot()
+    def _on_click_call(self):
+        print("pressed call")
+        if self.comboboxes["FRIENDS"] != "Active friends":
+            self.threads["COMMAND SENDER"].command = "CALL"
+            self.threads["COMMAND SENDER"].message = self.comboboxes["FRIENDS"].currentText()
+            self.threads["COMMAND SENDER"].start()
+
+    @pyqtSlot()
+    def _on_click_hang_up(self):
+        print("pressed hang up")
+        self.is_connected = False
+
+    @pyqtSlot()
+    def _on_click_camera(self):
+        print("pressed camera")
+        if self.is_camera_on:
+            self.is_camera_on = False
+            self.static = True
+            self.buttons["CAMERA"].setText("Camera on")
+        else:
+            self.is_camera_on = True
+            self.static = False
+            self.buttons["CAMERA"].setText("Camera off")
+
+    @pyqtSlot()
+    def _on_click_add_friend(self):
+        print("pressed add friend")
+        self.threads["COMMAND SENDER"].message = self.textboxes["FRIEND NAME"].text()
+        self.threads["COMMAND SENDER"].command = "ADD-FRIEND"
+        self.threads["COMMAND SENDER"].start()
 
     def closeEvent(self, event):
-        self.thread_video.stop()
-        self.thread_video_2.stop()
-        self.thread_recv.stop()
-        self.thread_command.stop()
+        for thread in self.threads.values():
+            if thread.isRunning():
+                thread.stop()
+        self.video_socket.close()
+        self.command_socket.close()
         event.accept()
 
     @pyqtSlot(np.ndarray)
     def update_image(self, cv_img):
         """Updates the image_label with a new opencv image"""
-        self.thread_video_2.image = cv_img
-        self.thread_video_2.start()
+        if self.static:
+            self.labels["MY CAMERA"].setPixmap(self.tmp)
+        else:
+            qt_img = self.convert_cv_qt(cv_img)
+            self.labels["MY CAMERA"].setPixmap(qt_img)
 
-        qt_img = self.convert_cv_qt(cv_img)
-        self.image_label.setPixmap(qt_img)
+        if self.is_connected:
+            if self.static:
+                self.threads["IMAGE SENDER"].image = cv2.resize(
+                    cv2.imread("/home/piotr/Projects/video-chat/client/UI/pp.png"), (320, 240),
+                    interpolation=cv2.INTER_AREA)
+            else:
+                self.threads["IMAGE SENDER"].image = cv_img
+            self.threads["IMAGE SENDER"].start()
 
     @pyqtSlot(np.ndarray)
     def update_call_image(self, cv_img):
         """Updates the image_label with a new opencv image"""
+        if self.is_connected:
+            self.threads["IMAGE RECEIVER"].start()
         qt_img = self.convert_cv_qt(cv_img)
-        self.connection_label.setPixmap(qt_img)
+        self.labels["FRIEND CAMERA"].setPixmap(qt_img)
+        # self.labels["FRIEND CAMERA"].setPixmap(self.tmp)
 
     @pyqtSlot(list)
-    def update_active_users(self, usernames):
-        self.cbx_friends.clear()
-        self.cbx_friends.addItems(usernames)
+    def update_command(self, respond):
+        def handle_adding_friends(respond):
+            if int(respond) == 1:
+                QMessageBox.question(self, 'Friend list message', "You have a new friend!",
+                                     QMessageBox.Ok, QMessageBox.Ok)
+            if int(respond) == -1:
+                QMessageBox.question(self, 'Friend list message', "There is no user with that login!",
+                                     QMessageBox.Ok, QMessageBox.Ok)
+            if int(respond) == -2:
+                QMessageBox.question(self, 'Friend list message', "This user is already your friend!",
+                                     QMessageBox.Ok, QMessageBox.Ok)
+            if int(respond) == -3:
+                QMessageBox.question(self, 'Friend list message',
+                                     "Adding yourself to your friends list is very sad :((",
+                                     QMessageBox.Ok, QMessageBox.Ok)
+            self.textboxes["FRIEND NAME"].setText("")
+
+        def handle_active_friends(friend_list):
+            self.comboboxes["FRIENDS"].clear()
+            self.comboboxes["FRIENDS"].addItem("Active friends")
+            self.comboboxes["FRIENDS"].addItems(friend_list)
+
+        def handle_call(tmp):
+            self.is_connected = True
+
+        print(respond)
+        commands_list = ["ADD-FRIEND", "ACTIVE", "CALL"]
+        commands_dict = {command: respond.index(command) for command in commands_list if command in respond}
+        sorted_commands = sorted(commands_dict.items(), key=lambda x:x[1])
+        index_iterator = iter([idx for _, idx in sorted_commands])
+        skip = next(index_iterator)
+
+        for command, index in sorted_commands:
+            val = next(index_iterator, -1)
+            if val == -1:
+                tmp = respond[index:]
+            else:
+                tmp = respond[index:val]
+
+            if command == "ADD-FRIEND":
+                handle_adding_friends(tmp[1])
+            elif command == "ACTIVE":
+                handle_active_friends(tmp[1:])
+            elif command == "CALL":
+                handle_call(tmp[1])
 
     def convert_cv_qt(self, cv_img):
         """Convert from an opencv image to QPixmap"""
@@ -251,7 +406,8 @@ class AppVideo(QWidget):
         h, w, ch = rgb_image.shape
         bytes_per_line = ch * w
         convert_to_Qt_format = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        p = convert_to_Qt_format.scaled(self.display_width, self.display_height, Qt.KeepAspectRatio)
+        p = convert_to_Qt_format.scaled(self.label_params["WIDTH"], self.label_params["HEIGHT"],
+                                        Qt.KeepAspectRatio, transformMode=Qt.SmoothTransformation)
         return QPixmap.fromImage(p)
 
     def _switch_back(self):
